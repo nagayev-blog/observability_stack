@@ -1,1 +1,31 @@
+version: "3.8"
 
+services:
+  metrics-demo:
+    # Вариант A: сборка из исходников (нужен build-контекст — см. инструкцию).
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Вариант B: если соберёшь и запушишь образ в registry — закомментируй build
+    # выше и раскомментируй image ниже:
+    # image: your-registry/metrics-demo:latest
+    container_name: metrics-demo
+    restart: unless-stopped
+    # Публикуем приложение наружу по порту 3377 (без домена/Traefik).
+    # Снаружи: http://example.com:3377
+    ports:
+      - "3377:8000"
+    networks:
+      - traefik_default
+    labels:
+      # Alloy скрейпит метрики с этого контейнера.
+      # Порт ВНУТРЕННИЙ (8000), не 3377 — Alloy ходит внутри Docker-сети,
+      # а не через проброшенный наружу порт.
+      - "monitoring.scrape=true"
+      - "monitoring.port=8000"
+      # Логи тоже собираем (stdout uvicorn).
+      - "monitoring.logs=true"
+
+networks:
+  traefik_default:
+    external: true

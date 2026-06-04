@@ -1,0 +1,95 @@
+### Grafana Agent
+
+#### docker-compose.yml для агента на хосте с серверами vm loki
+version: "3.8"
+
+services:
+    alloy:
+    image: grafana/alloy:latest
+    command:
+        - "run"
+        - "--server.http.listen-addr=0.0.0.0:12345"
+        - "/etc/alloy/config.alloy"
+    configs:
+        - source: alloy_config
+        target: /etc/alloy/config.alloy
+    volumes:
+        - /var/run/docker.sock:/var/run/docker.sock:ro
+        - alloy_data:/var/lib/alloy/data
+    networks:
+        - traefik_default
+    ports:
+        - "12345:12345"
+    restart: unless-stopped
+
+networks:
+    traefik_default:
+    external: true
+
+volumes:
+    alloy_data:
+
+configs:
+    alloy_config:
+    content: |
+        discovery.docker "containers" {
+        host = "unix:///var/run/docker.sock"
+        }
+
+        discovery.relabel "metrics" {
+        targets = discovery.docker.containers.targets
+        rule {
+            source_labels = ["__meta_docker_container_label_monitoring_scrape"]
+            regex         = "true"
+            action        = "keep"
+        }
+        rule {
+            source_labels = ["__meta_docker_container_label_monitoring_port"]
+            target_label  = "__address__"
+        }
+        rule {
+            source_labels = ["__meta_docker_container_name"]
+            regex         = "/(.*)"
+            target_label  = "container"
+        }
+        }
+
+        prometheus.scrape "containers" {
+        targets         = discovery.relabel.metrics.output
+        forward_to      = [prometheus.remote_write.vm.receiver]
+        scrape_interval = "15s"
+        }
+
+        prometheus.remote_write "vm" {
+        endpoint {
+            url = "http://victoriametrics:8428/api/v1/write"
+        }
+        external_labels = { host = "dckr" }
+        }
+
+        discovery.relabel "logs" {
+        targets = discovery.docker.containers.targets
+        rule {
+            source_labels = ["__meta_docker_container_label_monitoring_logs"]
+            regex         = "true"
+            action        = "keep"
+        }
+        rule {
+            source_labels = ["__meta_docker_container_name"]
+            regex         = "/(.*)"
+            target_label  = "container"
+        }
+        }
+
+        loki.source.docker "containers" {
+        host       = "unix:///var/run/docker.sock"
+        targets    = discovery.relabel.logs.output
+        forward_to = [loki.write.local.receiver]
+        }
+
+        loki.write "local" {
+        endpoint {
+            url = "http://loki:3100/loki/api/v1/push"
+        }
+        external_labels = { host = "dckr" }
+        }

@@ -1,1 +1,117 @@
+### Grafana + VM + LOKI
+#
+# Переменные окружения:
+#
+#    GF_ADMIN_USER=adminuser
+#    GF_ADMIN_PASSWORD=Password000#
+#    INGEST_AUTH=ingest:$$2y$05$$SYlKdsfsdfsdfg34g34j45j454j53XuLbATyVZtQ5kUznJQz./D/am
+#    DOMAIN=example.com
+#
+# docker-compose.yml
 
+version: "3.8"
+
+services:
+    victoriametrics:
+    image: victoriametrics/victoria-metrics:latest
+    command:
+        - "--storageDataPath=/storage"
+        - "--retentionPeriod=3"
+        - "--httpListenAddr=:8428"
+    volumes:
+        - vm_data:/storage
+    networks:
+        - monitoring
+        - traefik_default
+    labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=traefik_default"
+        - "traefik.http.routers.vm.rule=Host(`vm01.${DOMAIN}`)"
+        - "traefik.http.routers.vm.entrypoints=websecure"
+        - "traefik.http.routers.vm.tls.certresolver=letsencrypt"
+        - "traefik.http.services.vm.loadbalancer.server.port=8428"
+        - "traefik.http.routers.vm.middlewares=ingest-auth"
+        - "traefik.http.middlewares.ingest-auth.basicauth.users=${INGEST_AUTH}"
+    restart: unless-stopped
+
+    loki:
+    image: grafana/loki:latest
+    command: -config.file=/etc/loki/config.yml
+    configs:
+        - source: loki_config
+        target: /etc/loki/config.yml
+    volumes:
+        - loki_data:/loki
+    networks:
+        - monitoring
+        - traefik_default
+    labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=traefik_default"
+        - "traefik.http.routers.loki.rule=Host(`loki01.${DOMAIN}`)"
+        - "traefik.http.routers.loki.entrypoints=websecure"
+        - "traefik.http.routers.loki.tls.certresolver=letsencrypt"
+        - "traefik.http.services.loki.loadbalancer.server.port=3100"
+        - "traefik.http.routers.loki.middlewares=ingest-auth"
+    restart: unless-stopped
+
+    grafana:
+    image: grafana/grafana:latest
+    environment:
+        - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER}
+        - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD}
+        - GF_SERVER_ROOT_URL=https://grafana.${DOMAIN}
+    volumes:
+        - grafana_data:/var/lib/grafana
+    networks:
+        - monitoring
+        - traefik_default
+    labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=traefik_default"
+        - "traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN}`)"
+        - "traefik.http.routers.grafana.entrypoints=websecure"
+        - "traefik.http.routers.grafana.tls.certresolver=letsencrypt"
+        - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+    restart: unless-stopped
+
+networks:
+    monitoring:
+    driver: bridge
+    traefik_default:
+    external: true
+
+volumes:
+    vm_data:
+    loki_data:
+    grafana_data:
+
+configs:
+    loki_config:
+    content: |
+        auth_enabled: false
+        server:
+        http_listen_port: 3100
+        common:
+        instance_addr: 127.0.0.1
+        path_prefix: /loki
+        storage:
+            filesystem:
+            chunks_directory: /loki/chunks
+            rules_directory: /loki/rules
+        replication_factor: 1
+        ring:
+            kvstore:
+            store: inmemory
+        schema_config:
+        configs:
+            - from: 2024-01-01
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index:
+                prefix: index_
+                period: 24h
+        limits_config:
+        retention_period: 720h
+        reject_old_samples: false       

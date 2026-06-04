@@ -1,0 +1,109 @@
+# docker-compose.yml для агента на удаленных хостах
+
+# Переменные окружения:
+
+# VM_HOST_URL=https://vm01.example.com.ru/api/v1/write
+# LOKI_HOST_URL=https://loki01.example.com/loki/api/v1/push
+# INGEST_USER=ingest
+# INGEST_PASSWORD=c6422c780f363d4bf7e3a3bd69bb56
+# ALLOY_HOST=docker.example.com
+
+version: "3.8"
+services:
+    alloy:
+    image: grafana/alloy:latest
+    environment:
+        - VM_HOST_URL=${VM_HOST_URL}
+        - LOKI_HOST_URL=${LOKI_HOST_URL}
+        - INGEST_USER=${INGEST_USER}
+        - INGEST_PASSWORD=${INGEST_PASSWORD}
+        - ALLOY_HOST=${ALLOY_HOST}
+    command:
+        - "run"
+        - "--server.http.listen-addr=0.0.0.0:12345"
+        - "/etc/alloy/config.alloy"
+    configs:
+        - source: alloy_config_agent_v1
+        target: /etc/alloy/config.alloy
+    volumes:
+        - /var/run/docker.sock:/var/run/docker.sock:ro
+        - alloy_data:/var/lib/alloy/data
+    networks:
+        - traefik_default
+    ports:
+        - "12345:12345"
+    restart: unless-stopped
+networks:
+    traefik_default:
+    external: true
+volumes:
+    alloy_data:
+configs:
+    alloy_config_agent_v1:
+    content: |
+        discovery.docker "containers" {
+        host = "unix:///var/run/docker.sock"
+        }
+        discovery.relabel "metrics" {
+        targets = discovery.docker.containers.targets
+        rule {
+            source_labels = ["__meta_docker_container_label_monitoring_scrape"]
+            regex         = "true"
+            action        = "keep"
+        }
+        rule {
+            source_labels = ["__meta_docker_network_ip", "__meta_docker_container_label_monitoring_port"]
+            separator     = ":"
+            regex         = "(.+):(.+)"
+            replacement   = "$${1}:$${2}"
+            target_label  = "__address__"
+        }
+        rule {
+            source_labels = ["__meta_docker_container_name"]
+            regex         = "/(.*)"
+            target_label  = "container"
+        }
+        }
+        prometheus.scrape "containers" {
+        targets         = discovery.relabel.metrics.output
+        forward_to      = [prometheus.remote_write.vm.receiver]
+        scrape_interval = "15s"
+        }
+        prometheus.remote_write "vm" {
+        endpoint {
+            url = sys.env("VM_HOST_URL")
+            basic_auth {
+            username = sys.env("INGEST_USER")
+            password = sys.env("INGEST_PASSWORD")
+            }
+        }
+        external_labels = { host = sys.env("ALLOY_HOST") }
+        }
+        discovery.relabel "logs" {
+        targets = discovery.docker.containers.targets
+        rule {
+            source_labels = ["__meta_docker_container_label_monitoring_logs"]
+            regex         = "true"
+            action        = "keep"
+        }
+        rule {
+            source_labels = ["__meta_docker_container_name"]
+            regex         = "/(.*)"
+            target_label  = "container"
+        }
+        }
+        loki.source.docker "containers" {
+        host       = "unix:///var/run/docker.sock"
+        targets    = discovery.relabel.logs.output
+        forward_to = [loki.write.local.receiver]
+        }
+        loki.write "local" {
+        endpoint {
+            url = sys.env("LOKI_HOST_URL")
+            basic_auth {
+            username = sys.env("INGEST_USER")
+            password = sys.env("INGEST_PASSWORD")
+            }
+        }
+        external_labels = { host = sys.env("ALLOY_HOST") }
+        }
